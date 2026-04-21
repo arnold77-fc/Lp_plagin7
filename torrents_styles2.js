@@ -1,279 +1,365 @@
 (function () {
   'use strict';
 
-  Lampa.Platform.tv();
-
-  const config = {
-    version: '2.0.5',
-    name: 'Torrent Styles MOD',
-    pluginId: 'torrent_styles_mod'
+  var config = {
+    version: '2.1',
+    name: 'Torrent Styles',
+    pluginId: 'torrent_styles'
   };
 
-  const TH = {
-    seeds: { low: 5, good: 10, high: 20 },
-    bitrate: { high: 50, veryHigh: 100 },
-    size: { mid: 50, high: 100, top: 200 },
-    debounce: 30
+  // Thresholds
+  // Seeds:
+  // - <5: danger (red)
+  // - 5..9: normal (light emerald)   -> base `ts-seeds`
+  // - 10..19: good (emerald)         -> `good-seeds`
+  // - >=20: top (gold)               -> `high-seeds`
+  //
+  // Bitrate (Mbps):
+  // - <50: base `ts-bitrate`
+  // - 50..100: gold                  -> `high-bitrate`
+  // - >100: red                      -> `very-high-bitrate`
+  //
+  // Size (GB):
+  // - <50: base `ts-size`
+  // - 50..99: emerald                -> `mid-size`
+  // - 100..200: gold                 -> `high-size`
+  // - >200: red                      -> `top-size`
+  var TH = {
+    seeds: {
+      danger_below: 5,
+      good_from: 10,
+      top_from: 20
+    },
+    bitrate: {
+      warn_from: 50,
+      danger_from: 100
+    },
+    size: {
+      mid_from_gb: 50,
+      high_from_gb: 100,
+      top_from_gb: 200
+    },
+    // Debounce updateTorrentStyles() calls triggered by MutationObserver
+    debounce_ms: 60
   };
 
-  const styles = {
-    '.torrent-item__bitrate > span, .torrent-item__seeds > span, .torrent-item__grabs > span, .torrent-item__size': {
+  var styles = {
+    // Базовий вигляд бейджів
+    '.torrent-item__bitrate > span.ts-bitrate, .torrent-item__seeds > span.ts-seeds, .torrent-item__grabs > span.ts-grabs, .torrent-item__size.ts-size': {
       'display': 'inline-flex',
       'align-items': 'center',
       'justify-content': 'center',
+      'box-sizing': 'border-box',
       'min-height': '1.7em',
-      'padding': '0.15em 0.45em',
+      // Корекція для підняття тексту: зменшено верхній та збільшено нижній відступ
+      'padding': '0.05em 0.45em 0.25em 0.45em',
       'border-radius': '0.5em',
       'font-weight': '700',
       'font-size': '0.9em',
+      'line-height': '1',
       'white-space': 'nowrap',
-      'font-variant-numeric': 'tabular-nums',
-      'box-sizing': 'border-box'
+      'vertical-align': 'middle',
+      'font-variant-numeric': 'tabular-nums'
     },
+
     '.torrent-item__bitrate, .torrent-item__grabs, .torrent-item__seeds': {
       'margin-right': '0.55em'
     },
 
-    /* Сиды */
-    '.torrent-item__seeds > span': {
-      'color': '#5cd4b0',
-      'background-color': 'rgba(92,212,176,0.14)',
-      'border': '0.15em solid rgba(92,212,176,0.9)',
-      'box-shadow': '0 0 0.75em rgba(92,212,176,0.28)'
+    // Seeds (раздають)
+    '.torrent-item__seeds > span.ts-seeds': {
+      color: '#5cd4b0',
+      'background-color': 'rgba(92, 212, 176, 0.14)',
+      border: '0.15em solid rgba(92, 212, 176, 0.90)'
     },
-    '.torrent-item__seeds > span.low-seeds': {
-      'color': '#ff5f6d',
-      'background-color': 'rgba(255,95,109,0.14)',
-      'border': '0.15em solid rgba(255,95,109,0.82)',
-      'box-shadow': '0 0 0.65em rgba(255,95,109,0.26)',
-      'text-shadow': '0 0 0.25em rgba(255,95,109,0.25)'
+    '.torrent-item__seeds > span.ts-seeds.low-seeds': {
+      color: '#ff5f6d',
+      'background-color': 'rgba(255, 95, 109, 0.14)',
+      border: '0.15em solid rgba(255, 95, 109, 0.82)'
     },
-    '.torrent-item__seeds > span.good-seeds': {
-      'color': '#43cea2',
-      'background-color': 'rgba(67,206,162,0.16)',
-      'border': '0.15em solid rgba(67,206,162,0.92)',
-      'box-shadow': '0 0 0.9em rgba(67,206,162,0.34)'
+    '.torrent-item__seeds > span.ts-seeds.good-seeds': {
+      color: '#43cea2',
+      'background-color': 'rgba(67, 206, 162, 0.16)',
+      border: '0.15em solid rgba(67, 206, 162, 0.92)'
     },
-    '.torrent-item__seeds > span.high-seeds': {
-      'color': '#ffc371',
-      'background': 'linear-gradient(135deg, rgba(255,195,113,0.28), rgba(67,206,162,0.10))',
-      'border': '0.15em solid rgba(255,195,113,0.92)',
-      'box-shadow': '0 0 0.95em rgba(255,195,113,0.38)',
-      'text-shadow': '0 0 0.25em rgba(255,195,113,0.25)'
+    '.torrent-item__seeds > span.ts-seeds.high-seeds': {
+      color: '#ffc371',
+      'background-color': 'rgba(255, 195, 113, 0.22)',
+      border: '0.15em solid rgba(255, 195, 113, 0.92)'
     },
 
-    /* Личеры */
-    '.torrent-item__grabs > span': {
-      'color': '#4db6ff',
-      'background-color': 'rgba(77,182,255,0.12)',
-      'border': '0.15em solid rgba(77,182,255,0.82)',
-      'box-shadow': '0 0 0.35em rgba(77,182,255,0.16)'
+    // Grabs (качають)
+    '.torrent-item__grabs > span.ts-grabs': {
+      color: '#4db6ff',
+      'background-color': 'rgba(77, 182, 255, 0.12)',
+      border: '0.15em solid rgba(77, 182, 255, 0.82)'
     },
-    '.torrent-item__grabs > span.high-grabs': {
-      'color': '#4db6ff',
-      'background': 'linear-gradient(135deg, rgba(77,182,255,0.18), rgba(52,152,219,0.10))',
-      'border': '0.15em solid rgba(77,182,255,0.92)',
-      'box-shadow': '0 0 0.55em rgba(77,182,255,0.22)'
+    '.torrent-item__grabs > span.ts-grabs.high-grabs': {
+      color: '#4db6ff',
+      'background-color': 'rgba(77, 182, 255, 0.18)',
+      border: '0.15em solid rgba(77, 182, 255, 0.92)'
     },
 
-    /* Битрейт */
-    '.torrent-item__bitrate > span': {
-      'color': '#5cd4b0',
-      'background-color': 'rgba(67,206,162,0.10)',
-      'border': '0.15em solid rgba(92,212,176,0.78)',
-      'box-shadow': '0 0 0.45em rgba(92,212,176,0.20)'
+    // Bitrate
+    '.torrent-item__bitrate > span.ts-bitrate': {
+      color: '#5cd4b0',
+      'background-color': 'rgba(67, 206, 162, 0.10)',
+      border: '0.15em solid rgba(92, 212, 176, 0.78)'
     },
-    '.torrent-item__bitrate > span.high-bitrate': {
-      'color': '#ffc371',
-      'background': 'linear-gradient(135deg, rgba(255,195,113,0.28), rgba(67,206,162,0.10))',
-      'border': '0.15em solid rgba(255,195,113,0.92)',
-      'box-shadow': '0 0 0.95em rgba(255,195,113,0.38)',
-      'text-shadow': '0 0 0.25em rgba(255,195,113,0.25)'
+    '.torrent-item__bitrate > span.ts-bitrate.high-bitrate': {
+      color: '#ffc371',
+      'background-color': 'rgba(255, 195, 113, 0.22)',
+      border: '0.15em solid rgba(255, 195, 113, 0.92)'
     },
-    '.torrent-item__bitrate > span.very-high-bitrate': {
-      'color': '#ff5f6d',
-      'background': 'linear-gradient(135deg, rgba(255,95,109,0.28), rgba(67,206,162,0.08))',
-      'border': '0.15em solid rgba(255,95,109,0.92)',
-      'box-shadow': '0 0 1.05em rgba(255,95,109,0.40)',
-      'text-shadow': '0 0 0.25em rgba(255,95,109,0.25)'
+    '.torrent-item__bitrate > span.ts-bitrate.very-high-bitrate': {
+      color: '#ff5f6d',
+      'background-color': 'rgba(255, 95, 109, 0.22)',
+      border: '0.15em solid rgba(255, 95, 109, 0.92)'
     },
 
-    /* Размер */
-    '.torrent-item__size': {
-      'color': '#5cd4b0',
-      'background-color': 'rgba(92,212,176,0.12)',
-      'border': '0.15em solid rgba(92,212,176,0.82)',
-      'box-shadow': '0 0 0.7em rgba(92,212,176,0.26)',
-      'font-weight': '700'
+    // Size
+    '.torrent-item__size.ts-size': {
+      color: '#5cd4b0',
+      'background-color': 'rgba(92, 212, 176, 0.12)',
+      border: '0.15em solid rgba(92, 212, 176, 0.82)'
     },
-    '.torrent-item__size.mid-size': {
-      'color': '#43cea2',
-      'background-color': 'rgba(67,206,162,0.16)',
-      'border': '0.15em solid rgba(67,206,162,0.92)',
-      'box-shadow': '0 0 0.9em rgba(67,206,162,0.34)'
+    '.torrent-item__size.ts-size.mid-size': {
+      color: '#43cea2',
+      'background-color': 'rgba(67, 206, 162, 0.16)',
+      border: '0.15em solid rgba(67, 206, 162, 0.92)'
     },
-    '.torrent-item__size.high-size': {
-      'color': '#ffc371',
-      'background': 'linear-gradient(135deg, rgba(255,195,113,0.28), rgba(67,206,162,0.10))',
-      'border': '0.15em solid rgba(255,195,113,0.95)',
-      'box-shadow': '0 0 1.05em rgba(255,195,113,0.40)',
-      'text-shadow': '0 0 0.25em rgba(255,195,113,0.22)'
+    '.torrent-item__size.ts-size.high-size': {
+      color: '#ffc371',
+      'background-color': 'rgba(255, 195, 113, 0.22)',
+      border: '0.15em solid rgba(255, 195, 113, 0.95)'
     },
-    '.torrent-item__size.top-size': {
-      'color': '#ff5f6d',
-      'background': 'linear-gradient(135deg, rgba(255,95,109,0.28), rgba(67,206,162,0.08))',
-      'border': '0.15em solid rgba(255,95,109,0.95)',
-      'box-shadow': '0 0 1.1em rgba(255,95,109,0.42)',
-      'text-shadow': '0 0 0.25em rgba(255,95,109,0.22)'
+    '.torrent-item__size.ts-size.top-size': {
+      color: '#ff5f6d',
+      'background-color': 'rgba(255, 95, 109, 0.22)',
+      border: '0.15em solid rgba(255, 95, 109, 0.95)'
     },
 
+    '.scroll__body': {
+      margin: '5px'
+    }
   };
 
-  const mobileStyles = `
-    @media (max-width: 768px) {
-      .torrent-item__bitrate > span,
-      .torrent-item__seeds > span,
-      .torrent-item__grabs > span,
-      .torrent-item__size {
-        min-height: 1.5em !important;
-        padding: 0.1em 0.35em !important;
-        font-size: 0.85em !important;
-      }
-      .torrent-item__bitrate,
-      .torrent-item__grabs,
-      .torrent-item__seeds {
-        margin-right: 0.4em !important;
-      }
-    }
-  `;
 
   function injectStyles() {
-    const style = document.createElement('style');
-    style.setAttribute('data-' + config.pluginId, 'true');
-    style.textContent = Object.entries(styles)
-      .map(([selector, rules]) => 
-        `${selector} { ${Object.entries(rules).map(([k, v]) => `${k}: ${v} !important`).join('; ')} }`
-      )
-      .join('\n') + mobileStyles;
-    document.head.appendChild(style);
+    try {
+      var style = document.createElement('style');
+      var css = Object.keys(styles)
+        .map(function (selector) {
+          var props = styles[selector];
+          var rules = Object.keys(props)
+            .map(function (prop) {
+              return prop + ': ' + props[prop] + ' !important';
+            })
+            .join('; ');
+          return selector + ' { ' + rules + ' }';
+        })
+        .join('\n');
+
+      style.setAttribute('data-' + config.pluginId + '-styles', 'true');
+      style.innerHTML = css;
+      document.head.appendChild(style);
+    } catch (e) {
+      console.error(config.name, 'style injection error:', e);
+    }
   }
 
-  let updateTimer = null;
-  function scheduleUpdate() {
-    clearTimeout(updateTimer);
-    updateTimer = setTimeout(updateTorrentStyles, TH.debounce);
+  var tsUpdateTimer = null;
+  function scheduleUpdate(delayMs) {
+    try {
+      if (tsUpdateTimer) clearTimeout(tsUpdateTimer);
+    } catch (e) { }
+
+    var ms = typeof delayMs === 'number' ? delayMs : TH.debounce_ms;
+    tsUpdateTimer = setTimeout(function () {
+      tsUpdateTimer = null;
+      updateTorrentStyles();
+    }, ms);
   }
 
-  function parseIntVal(text) {
-    return parseInt(text || '', 10) || 0;
+  function tsParseFloat(text) {
+    var t = ((text || '') + '').trim();
+    var m = t.match(/(\d+(?:[.,]\d+)?)/);
+    return m ? (parseFloat(m[1].replace(',', '.')) || 0) : 0;
   }
 
-  function parseFloatVal(text) {
-    return parseFloat((text || '').replace(',', '.')) || 0;
+  function tsParseInt(text) {
+    var t = ((text || '') + '').trim();
+    var v = parseInt(t, 10);
+    return isNaN(v) ? 0 : v;
   }
 
-  function parseSizeGB(text) {
-    const normalized = (text || '').replace(/\u00A0/g, ' ').trim();
-    const match = normalized.match(/(\d+(?:[.,]\d+)?)\s*(kb|mb|gb|tb|кб|мб|гб|тб)/i);
-    if (!match) return null;
-
-    const num = parseFloat(match[1].replace(',', '.'));
-    const unit = match[2].toLowerCase();
-
-    if (unit === 'tb' || unit === 'тб') return num * 1024;
-    if (unit === 'gb' || unit === 'гб') return num;
-    if (unit === 'mb' || unit === 'мб') return num / 1024;
-    if (unit === 'kb' || unit === 'кб') return num / (1024 * 1024);
-    return 0;
+  function tsApplyTier(el, classesToClear, classToAdd) {
+    try {
+      for (var i = 0; i < classesToClear.length; i++) el.classList.remove(classesToClear[i]);
+      if (classToAdd) el.classList.add(classToAdd);
+    } catch (e) { }
   }
 
-  function setTier(el, tiers, tier) {
-    tiers.forEach(c => el.classList.remove(c));
-    if (tier) el.classList.add(tier);
+  function tsParseSizeToGb(text) {
+    try {
+      var t = ((text || '') + '').replace(/\u00A0/g, ' ').trim(); // NBSP -> space
+      // Supports: "123 GB", "1.2 TB", "900 MB" and RU: "ГБ/ТБ/МБ/КБ"
+      var m = t.match(/(\d+(?:[.,]\d+)?)\s*(kb|mb|gb|tb|кб|мб|гб|тб)/i);
+      if (!m) return null;
+
+      var num = parseFloat((m[1] || '0').replace(',', '.')) || 0;
+      var unit = (m[2] || '').toLowerCase();
+      var gb = 0;
+
+      if (unit === 'tb' || unit === 'тб') gb = num * 1024;
+      else if (unit === 'gb' || unit === 'гб') gb = num;
+      else if (unit === 'mb' || unit === 'мб') gb = num / 1024;
+      else if (unit === 'kb' || unit === 'кб') gb = num / (1024 * 1024);
+      else gb = 0;
+
+      return gb;
+    } catch (e) {
+      return null;
+    }
   }
 
   function updateTorrentStyles() {
-    document.querySelectorAll('.torrent-item__seeds > span').forEach(span => {
-      const val = parseIntVal(span.textContent);
-      let tier = '';
-      if (val < TH.seeds.low) tier = 'low-seeds';
-      else if (val >= TH.seeds.high) tier = 'high-seeds';
-      else if (val >= TH.seeds.good) tier = 'good-seeds';
-      setTier(span, ['low-seeds', 'good-seeds', 'high-seeds'], tier);
-    });
+    try {
+      document.querySelectorAll('.torrent-item__seeds span').forEach(function (span) {
+        var value = tsParseInt(span.textContent);
+        span.classList.add('ts-seeds');
 
-    document.querySelectorAll('.torrent-item__bitrate > span').forEach(span => {
-      const val = parseFloatVal(span.textContent);
-      let tier = '';
-      if (val > TH.bitrate.veryHigh) tier = 'very-high-bitrate';
-      else if (val >= TH.bitrate.high) tier = 'high-bitrate';
-      setTier(span, ['high-bitrate', 'very-high-bitrate'], tier);
-    });
+        var seedTier = '';
+        if (value < TH.seeds.danger_below) seedTier = 'low-seeds';
+        else if (value >= TH.seeds.top_from) seedTier = 'high-seeds';
+        else if (value >= TH.seeds.good_from) seedTier = 'good-seeds';
+        tsApplyTier(span, ['low-seeds', 'good-seeds', 'high-seeds'], seedTier);
+      });
 
-    document.querySelectorAll('.torrent-item__grabs > span').forEach(span => {
-      const val = parseIntVal(span.textContent);
-      setTier(span, ['high-grabs'], val > 10 ? 'high-grabs' : '');
-    });
+      document.querySelectorAll('.torrent-item__bitrate span').forEach(function (span) {
+        var value = tsParseFloat(span.textContent);
+        span.classList.add('ts-bitrate');
 
-    document.querySelectorAll('.torrent-item__size').forEach(el => {
-      const gb = parseSizeGB(el.textContent);
-      if (gb === null) {
-        setTier(el, ['mid-size', 'high-size', 'top-size'], '');
-        return;
-      }
-      let tier = '';
-      if (gb > TH.size.top) tier = 'top-size';
-      else if (gb >= TH.size.high) tier = 'high-size';
-      else if (gb >= TH.size.mid) tier = 'mid-size';
-      setTier(el, ['mid-size', 'high-size', 'top-size'], tier);
-    });
-  }
+        var brTier = '';
+        if (value > TH.bitrate.danger_from) brTier = 'very-high-bitrate';
+        else if (value >= TH.bitrate.warn_from) brTier = 'high-bitrate';
+        tsApplyTier(span, ['high-bitrate', 'very-high-bitrate'], brTier);
+      });
 
-  function observe() {
-    const observer = new MutationObserver(() => scheduleUpdate());
+      // "Grabs" in Lampa template is actually peers/leechers (качают)
+      document.querySelectorAll('.torrent-item__grabs span').forEach(function (span) {
+        var value = tsParseInt(span.textContent);
+        span.classList.add('ts-grabs');
+        tsApplyTier(span, ['high-grabs'], value > 10 ? 'high-grabs' : '');
+      });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
+      // Size badge (highlight big files)
+      document.querySelectorAll('.torrent-item__size').forEach(function (el) {
+        var text = (el.textContent || '');
+        el.classList.add('ts-size');
 
-    updateTorrentStyles();
-  }
+        var gb = tsParseSizeToGb(text);
+        if (gb === null) {
+          tsApplyTier(el, ['mid-size', 'high-size', 'top-size'], '');
+          return;
+        }
 
-  function register() {
-    if (typeof Lampa !== 'undefined') {
-      Lampa.Manifest.plugins = Lampa.Manifest.plugins || {};
-      Lampa.Manifest.plugins[config.pluginId] = {
-        type: 'other',
-        name: config.name,
-        version: config.version,
-        description: 'Цветовая индикация торрентов.'
-      };
+        var szTier = '';
+        if (gb > TH.size.top_from_gb) szTier = 'top-size';
+        else if (gb >= TH.size.high_from_gb) szTier = 'high-size';
+        else if (gb >= TH.size.mid_from_gb) szTier = 'mid-size';
+        tsApplyTier(el, ['mid-size', 'high-size', 'top-size'], szTier);
+      });
+    } catch (e) {
+      console.error(config.name, 'torrent update error:', e);
     }
-    window['plugin_' + config.pluginId + '_ready'] = true;
+  }
+
+  function observeDom() {
+    try {
+      var observer = new MutationObserver(function (mutations) {
+        var needsUpdate = false;
+        for (var i = 0; i < mutations.length; i++) {
+          var mutation = mutations[i];
+          // Check for added nodes
+          if (mutation.addedNodes && mutation.addedNodes.length) {
+            needsUpdate = true;
+            break;
+          }
+          // Check for text content changes (bitrate/seeds values might update)
+          if (mutation.type === 'characterData' ||
+            (mutation.type === 'childList' && mutation.target &&
+              (mutation.target.classList &&
+                (mutation.target.classList.contains('torrent-item__bitrate') ||
+                  mutation.target.classList.contains('torrent-item__seeds') ||
+                  mutation.target.classList.contains('torrent-item__grabs') ||
+                  mutation.target.classList.contains('torrent-item__size'))))) {
+            needsUpdate = true;
+            break;
+          }
+        }
+        if (needsUpdate) scheduleUpdate();
+      });
+
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+      scheduleUpdate(0);
+    } catch (e) {
+      console.error(config.name, 'observer error:', e);
+      scheduleUpdate(0);
+    }
+  }
+
+  function registerPlugin() {
+    try {
+      if (typeof Lampa !== 'undefined') {
+        Lampa.Manifest = Lampa.Manifest || {};
+        Lampa.Manifest.plugins = Lampa.Manifest.plugins || {};
+
+        Lampa.Manifest.plugins[config.pluginId] = {
+          type: 'other',
+          name: config.name,
+          version: config.version,
+          author: '@bodya_elven',
+          description: 'Додаткові стилі для торрентів'
+          // Оригінальний плагін: https://lampaplugins.github.io/store/torrent_styles_v2.js
+        };
+      }
+    } catch (e) {
+      console.error(config.name, 'register error:', e);
+    } finally {
+      window['plugin_' + config.pluginId + '_ready'] = true;
+    }
   }
 
   function init() {
     injectStyles();
-    updateTorrentStyles();
-    observe();
+    observeDom();
 
     if (window.appready) {
-      register();
-    } else if (Lampa?.Listener?.follow) {
-      Lampa.Listener.follow('app', e => {
+      registerPlugin();
+      // Update styles after app is ready
+      scheduleUpdate(200);
+    } else if (typeof Lampa !== 'undefined' && Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
+      Lampa.Listener.follow('app', function (e) {
         if (e.type === 'ready') {
-          register();
-          updateTorrentStyles();
+          registerPlugin();
+          // Update styles again when app is ready
+          scheduleUpdate(200);
         }
       });
     } else {
-      setTimeout(register, 500);
+      setTimeout(registerPlugin, 500);
     }
+
+    console.log(config.name, 'Configuration plugin loaded, version:', config.version);
   }
 
   init();
+
 })();
 (function(){
     // Список текстових замін
